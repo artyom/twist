@@ -101,9 +101,11 @@ type Thread struct {
 	Title     string `json:"title"`
 	Text      string `json:"content"`
 	Creator   uint64 `json:"creator"`
-	// CommentCount int    `json:"comment_count"` // for some reason this is always 0
-	Archived bool `json:"is_archived"`
+	Archived  bool   `json:"is_archived"`
 }
+
+// UpdatedAt is a convenience method to convert TsUpdated field to time.
+func (t *Thread) UpdatedAt() time.Time { return time.Unix(int64(t.TsUpdated), 0) }
 
 // Comment is a message posted to a thread.
 //
@@ -113,8 +115,11 @@ type Comment struct {
 	Text       string `json:"content"`
 	Creator    uint64 `json:"creator"`
 	OrderIndex int    `json:"obj_index"`
-	PostedAt   uint64 `json:"posted_ts"`
+	TsPosted   uint64 `json:"posted_ts"`
 }
+
+// PostedAt is a convenience method to convert TsPosted field to time.
+func (c *Comment) PostedAt() time.Time { return time.Unix(int64(c.TsPosted), 0) }
 
 // ThreadsPaginator returns ThreadsPaginator for a channel.
 func (c *Client) ThreadsPaginator(channelID uint64) *ThreadsPaginator {
@@ -201,12 +206,27 @@ func (c *Client) getChannelThreadsPage(ctx context.Context, channelID, afterID u
 	return out, nil
 }
 
-// CommentsPaginator returns CommentsPaginator for a thread.
+// CommentsPaginator returns CommentsPaginator that fetches all comments of a thread.
 func (c *Client) CommentsPaginator(threadID uint64) *CommentsPaginator {
 	return &CommentsPaginator{c: c, threadID: threadID}
 }
 
-// CommentsPaginator fetches all comments in a thread.
+// NewCommentsPaginator returns CommentsPaginator that fetches only thread
+// comments that were posted since given time.
+//
+// Only use it to update thread comments you already have on a best-effort
+// basis. Twist API logic is racy and may miss some comments that were updated
+// between per-page API calls. If you need to fetch all comments of a thread,
+// use CommentsPaginator method instead.
+func (c *Client) NewCommentsPaginator(threadID uint64, since time.Time) *CommentsPaginator {
+	var ts uint64
+	if t := since.Unix(); t > 0 {
+		ts = uint64(t)
+	}
+	return &CommentsPaginator{c: c, threadID: threadID, nextSinceTs: ts}
+}
+
+// CommentsPaginator fetches comments of a thread.
 //
 // Typical usage:
 //
@@ -223,6 +243,9 @@ type CommentsPaginator struct {
 	threadID  uint64
 	nextIndex int
 	done      bool
+
+	// only used when fetching updated comments
+	nextSinceTs uint64
 }
 
 // Next reports whether there's another page to load. It only returns false
@@ -234,9 +257,29 @@ func (tp *CommentsPaginator) Page(ctx context.Context) ([]Comment, error) {
 	if tp.done {
 		return nil, errors.New("all pages already read")
 	}
-	comments, err := tp.c.getThreadCommentsPage(ctx, tp.threadID, tp.nextIndex)
+	var comments []Comment
+	var err error
+	if tp.nextSinceTs != 0 {
+		comments, err = tp.c.getNewThreadCommentsPage(ctx, tp.threadID, tp.nextSinceTs)
+	} else {
+		comments, err = tp.c.getThreadCommentsPage(ctx, tp.threadID, tp.nextIndex)
+	}
 	if err != nil {
 		return nil, err
+	}
+	if tp.nextSinceTs != 0 && len(comments) != 0 {
+		var maxTs uint64
+		for _, c := range comments {
+			if c.TsPosted > maxTs {
+				maxTs = c.TsPosted
+			}
+		}
+		if maxTs != 0 {
+			// +1 to avoid duplicates on page boundaries: API uses closed
+			// interval and includes comments with posted_ts equal to
+			// newer_than_ts argument
+			tp.nextSinceTs = maxTs + 1
+		}
 	}
 	tp.done = len(comments) < maxCommentsPerPage
 	if l := len(comments); l != 0 {
@@ -245,6 +288,40 @@ func (tp *CommentsPaginator) Page(ctx context.Context) ([]Comment, error) {
 	return comments, nil
 }
 
+// getNewThreadCommentsPage returns chunk of comments using loose window based
+// on newer_than_ts API argument. Results aren't suitable to get a complete
+// list of thread comments. Results are not ordered, may contain duplicates,
+// and may miss some comments that were updated concurrently this API call.
+func (c *Client) getNewThreadCommentsPage(ctx context.Context, threadID uint64, sinceTimestamp uint64) ([]Comment, error) {
+	if threadID == 0 {
+		return nil, errors.New("invalid thread ID")
+	}
+	vals := make(url.Values)
+	vals.Add("thread_id", strconv.FormatUint(threadID, 10))
+	vals.Add("limit", strconv.Itoa(maxCommentsPerPage))
+	vals.Add("newer_than_ts", strconv.FormatUint(sinceTimestamp, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.twist.com/api/v3/comments/get"+"?"+vals.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	setAuthHeader(req, c.token)
+	body, err := doRequestWithRetries(req)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	var out []Comment
+	if err := json.NewDecoder(body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return out, nil
+}
+
+// getThreadCommentsPage returns chunk of comments using precise window based
+// on {from,to}_obj_index API arguments, suitable to reliably get all thread
+// comments. Comments returned are ordered by OrderIndex increasing without
+// gaps.
 func (c *Client) getThreadCommentsPage(ctx context.Context, threadID uint64, fromIndex int) ([]Comment, error) {
 	if fromIndex < 0 {
 		panic("fromIndex must be non-negative")
