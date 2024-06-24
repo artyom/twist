@@ -28,6 +28,59 @@ type Client struct {
 // See https://developer.twist.com/v3/#authentication for details.
 func New(token string) *Client { return &Client{token: token} }
 
+type User struct {
+	Id        uint64 `json:"id"`
+	Name      string `json:"name"`
+	ShortName string `json:"short_name"`
+}
+
+func (c *Client) Users(ctx context.Context, workspaceID uint64) ([]User, error) {
+	if workspaceID == 0 {
+		return nil, errors.New("invalid workspace id")
+	}
+	vals := make(url.Values)
+	vals.Add("id", strconv.FormatUint(workspaceID, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.twist.com/api/v4/workspace_users/get"+"?"+vals.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	setAuthHeader(req, c.token)
+	body, err := doRequestWithRetries(req)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	var out []User
+	if err := json.NewDecoder(body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Thread returns a single thread. Use [ThreadsPaginator] to get all threads of a channel.
+func (c *Client) Thread(ctx context.Context, threadID uint64) (*Thread, error) {
+	if threadID == 0 {
+		return nil, errors.New("invalid thread id")
+	}
+	vals := make(url.Values)
+	vals.Add("id", strconv.FormatUint(threadID, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.twist.com/api/v3/threads/getone"+"?"+vals.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	setAuthHeader(req, c.token)
+	body, err := doRequestWithRetries(req)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	var out Thread
+	if err := json.NewDecoder(body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Workspaces returns all the workspaces user has access to.
 func (c *Client) Workspaces(ctx context.Context) ([]Workspace, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.twist.com/api/v3/workspaces/get", nil)
@@ -301,14 +354,14 @@ func (c *Client) NewCommentsPaginator(threadID uint64, since time.Time) *Comment
 //
 // Typical usage:
 //
-// 	p := client.CommentsPaginator(3456) // get comments for thread with id=3456
-// 	for p.Next() {
-// 		comments, err := p.Page(ctx)
-// 		if err != nil {
-// 			return err
-// 		}
-// 		doSomethingWithComments(comments)
-// 	}
+//	p := client.CommentsPaginator(3456) // get comments for thread with id=3456
+//	for p.Next() {
+//		comments, err := p.Page(ctx)
+//		if err != nil {
+//			return err
+//		}
+//		doSomethingWithComments(comments)
+//	}
 type CommentsPaginator struct {
 	c         *Client
 	threadID  uint64
