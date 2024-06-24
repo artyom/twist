@@ -121,12 +121,28 @@ type Comment struct {
 // PostedAt is a convenience method to convert TsPosted field to time.
 func (c *Comment) PostedAt() time.Time { return time.Unix(int64(c.TsPosted), 0) }
 
-// ThreadsPaginator returns ThreadsPaginator for a channel.
+// ThreadsPaginator returns ThreadsPaginator that fetches all threads of a
+// channel.
 func (c *Client) ThreadsPaginator(channelID uint64) *ThreadsPaginator {
 	return &ThreadsPaginator{c: c, channelID: channelID}
 }
 
-// ThreadsPaginator fetches all threads in a channel.
+// NewThreadsPaginator returns ThreadsPaginator that fetches only threads
+// updated since given time.
+//
+// Only use it to update channel thread list that you already have on a
+// best-effort basis. Twist API logic is racy and may miss some threads that
+// were updated between per-page API calls. If you need to fetch all threads of
+// a channel, use ThreadsPaginator method instead.
+func (c *Client) NewThreadsPaginator(channelID uint64, since time.Time) *ThreadsPaginator {
+	var ts uint64
+	if t := since.Unix(); t > 0 {
+		ts = uint64(t)
+	}
+	return &ThreadsPaginator{c: c, channelID: channelID, nextSinceTs: ts}
+}
+
+// ThreadsPaginator fetches threads of a channel.
 //
 // Typical usage:
 //
@@ -143,6 +159,9 @@ type ThreadsPaginator struct {
 	channelID uint64
 	afterID   uint64
 	done      bool
+
+	// only used when fetching updated threads
+	nextSinceTs uint64
 }
 
 // Next reports whether there's another page to load. It only returns false
@@ -154,9 +173,28 @@ func (cp *ThreadsPaginator) Page(ctx context.Context) ([]Thread, error) {
 	if cp.done {
 		return nil, errors.New("all pages already read")
 	}
-	threads, err := cp.c.getChannelThreadsPage(ctx, cp.channelID, cp.afterID)
+	var threads []Thread
+	var err error
+	if cp.nextSinceTs != 0 {
+		threads, err = cp.c.getNewChannelThreadsPage(ctx, cp.channelID, cp.nextSinceTs)
+	} else {
+		threads, err = cp.c.getChannelThreadsPage(ctx, cp.channelID, cp.afterID)
+	}
 	if err != nil {
 		return nil, err
+	}
+	if cp.nextSinceTs != 0 && len(threads) != 0 {
+		var maxTs uint64
+		for _, t := range threads {
+			if t.TsUpdated > maxTs {
+				maxTs = t.TsUpdated
+			}
+			if maxTs != 0 {
+				// +1 to avoid duplicates on page boundaries, API uses closed
+				// interval
+				cp.nextSinceTs = maxTs + 1
+			}
+		}
 	}
 	cp.done = len(threads) < maxThreadsPerPage
 	if l := len(threads); l != 0 {
@@ -165,6 +203,39 @@ func (cp *ThreadsPaginator) Page(ctx context.Context) ([]Thread, error) {
 	return threads, nil
 }
 
+// getNewChannelThreadsPage returns chunk of threads using loose window based
+// on newer_than_ts API argument. Results aren't suitable to get a complete
+// list of channel threads. Results aren't ordered, may contain duplicates, and
+// may miss some threads that were updated concurrently with this API call.
+func (c *Client) getNewChannelThreadsPage(ctx context.Context, channelID, sinceTimestamp uint64) ([]Thread, error) {
+	if channelID == 0 {
+		return nil, errors.New("invalid channel ID")
+	}
+	vals := make(url.Values)
+	vals.Add("channel_id", strconv.FormatUint(channelID, 10))
+	vals.Add("limit", strconv.Itoa(maxThreadsPerPage))
+	vals.Add("newer_than_ts", strconv.FormatUint(sinceTimestamp, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.twist.com/api/v3/threads/get", strings.NewReader(vals.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setAuthHeader(req, c.token)
+	body, err := doRequestWithRetries(req)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	var out []Thread
+	if err := json.NewDecoder(body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return out, nil
+}
+
+// getChannelThreadsPage returns chunk of threads using precise window based on
+// after_id API argument, suitable to reliably get all channel threads.
 func (c *Client) getChannelThreadsPage(ctx context.Context, channelID, afterID uint64) ([]Thread, error) {
 	if channelID == 0 {
 		return nil, errors.New("invalid channel ID")
@@ -292,7 +363,7 @@ func (tp *CommentsPaginator) Page(ctx context.Context) ([]Comment, error) {
 // on newer_than_ts API argument. Results aren't suitable to get a complete
 // list of thread comments. Results are not ordered, may contain duplicates,
 // and may miss some comments that were updated concurrently this API call.
-func (c *Client) getNewThreadCommentsPage(ctx context.Context, threadID uint64, sinceTimestamp uint64) ([]Comment, error) {
+func (c *Client) getNewThreadCommentsPage(ctx context.Context, threadID, sinceTimestamp uint64) ([]Comment, error) {
 	if threadID == 0 {
 		return nil, errors.New("invalid thread ID")
 	}
