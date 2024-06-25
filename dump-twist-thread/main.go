@@ -52,7 +52,7 @@ func run(ctx context.Context, threadUrl string) error {
 	buf.WriteString("<post>\n")
 	fmt.Fprintf(&buf, "<author>%s</author>\n", cmp.Or(uidToName[thread.Creator], "UNKNOWN USER"))
 	fmt.Fprintf(&buf, "# %s\n\n", thread.Title)
-	fmt.Fprintln(&buf, thread.Text)
+	fmt.Fprintln(&buf, clearMentions(thread.Text))
 	buf.WriteString("</post>\n")
 	p := client.CommentsPaginator(ids.thread)
 	for p.Next() {
@@ -63,7 +63,7 @@ func run(ctx context.Context, threadUrl string) error {
 		for _, c := range comments {
 			buf.WriteString("<comment>\n")
 			fmt.Fprintf(&buf, "<author>%s</author>\n", cmp.Or(uidToName[c.Creator], "UNKNOWN USER"))
-			fmt.Fprintln(&buf, c.Text)
+			fmt.Fprintln(&buf, clearMentions(c.Text))
 			buf.WriteString("</comment>\n")
 		}
 	}
@@ -95,3 +95,7 @@ func tidFromUrl(url string) (*tid, error) {
 type tid struct {
 	workspace, channel, thread uint64
 }
+
+var mentionRe = regexp.MustCompile(`\[(?<name>[^\]]+)\]\(twist-mention://\d+\)`)
+
+func clearMentions(text string) string { return mentionRe.ReplaceAllString(text, "${name}") }
