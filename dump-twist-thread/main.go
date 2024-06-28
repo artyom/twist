@@ -50,7 +50,8 @@ func run(ctx context.Context, threadUrl string) error {
 	}
 	var buf bytes.Buffer
 	buf.WriteString("<post>\n")
-	fmt.Fprintf(&buf, "<author>%s</author>\n", cmp.Or(uidToName[thread.Creator], "UNKNOWN USER"))
+	fmt.Fprintf(&buf, "<author>%s</author>", cmp.Or(uidToName[thread.Creator], "UNKNOWN USER"))
+	fmt.Fprintf(&buf, "<date>%s</date>\n", thread.PostedAt().Format("Monday, 02 Jan 2006"))
 	fmt.Fprintf(&buf, "# %s\n\n", thread.Title)
 	fmt.Fprintln(&buf, clearMentions(thread.Text))
 	buf.WriteString("</post>\n")
@@ -62,7 +63,8 @@ func run(ctx context.Context, threadUrl string) error {
 		}
 		for _, c := range comments {
 			buf.WriteString("<comment>\n")
-			fmt.Fprintf(&buf, "<author>%s</author>\n", cmp.Or(uidToName[c.Creator], "UNKNOWN USER"))
+			fmt.Fprintf(&buf, "<author>%s</author>", cmp.Or(uidToName[c.Creator], "UNKNOWN USER"))
+			fmt.Fprintf(&buf, "<date>%s</date>\n", c.PostedAt().Format("Monday, 02 Jan 2006"))
 			fmt.Fprintln(&buf, clearMentions(c.Text))
 			buf.WriteString("</comment>\n")
 		}
