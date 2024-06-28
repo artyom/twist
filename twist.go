@@ -160,6 +160,9 @@ type Thread struct {
 // UpdatedAt is a convenience method to convert TsUpdated field to time.
 func (t *Thread) UpdatedAt() time.Time { return time.Unix(int64(t.TsUpdated), 0) }
 
+// PostedAt is a convenience method to convert TsPosted field to time.
+func (t *Thread) PostedAt() time.Time { return time.Unix(int64(t.TsPosted), 0) }
+
 // Comment is a message posted to a thread.
 //
 // See https://developer.twist.com/v3/#comments for details.
