@@ -4,26 +4,37 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/artyom/twist"
 )
 
 func main() {
 	log.SetFlags(0)
+	cache := flag.Bool("c", false, "cache result for 5 minutes"+
+		"\n(you can also enable this with DUMP_TWIST_THREAD_CACHE=1 env)")
 	flag.Parse()
-	if err := run(context.Background(), flag.Arg(0)); err != nil {
+	if v, _ := strconv.ParseBool(os.Getenv("DUMP_TWIST_THREAD_CACHE")); v && !*cache {
+		*cache = v
+	}
+	if err := run(context.Background(), *cache, flag.Arg(0)); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, threadUrl string) error {
+func run(ctx context.Context, cache bool, threadUrl string) error {
+	pruneCache()
 	if threadUrl == "" {
 		return errors.New("want Twist thread url as the first argument")
 	}
@@ -34,6 +45,12 @@ func run(ctx context.Context, threadUrl string) error {
 	ids, err := tidFromUrl(threadUrl)
 	if err != nil {
 		return err
+	}
+	if cache {
+		if b := readCache(threadUrl); len(b) != 0 {
+			_, err = os.Stdout.Write(b)
+			return err
+		}
 	}
 	client := twist.New(token)
 	users, err := client.Users(ctx, ids.workspace)
@@ -69,6 +86,9 @@ func run(ctx context.Context, threadUrl string) error {
 			buf.WriteString("</comment>\n")
 		}
 	}
+	if cache {
+		writeCache(threadUrl, buf.Bytes())
+	}
 	_, err = os.Stdout.Write(buf.Bytes())
 	return err
 }
@@ -101,3 +121,59 @@ type tid struct {
 var mentionRe = regexp.MustCompile(`\[(?<name>[^\]]+)\]\(twist-mention://\d+\)`)
 
 func clearMentions(text string) string { return mentionRe.ReplaceAllString(text, "${name}") }
+
+func writeCache(url string, data []byte) error {
+	if cacheDir == "" {
+		return errors.New("cache dir is unknown")
+	}
+	if url == "" || len(data) == 0 {
+		return errors.New("both url and data must be non-empty")
+	}
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(cacheDir, urlToKey(url)), data, 0600)
+}
+
+func readCache(url string) []byte {
+	if url == "" || cacheDir == "" {
+		return nil
+	}
+	b, err := os.ReadFile(filepath.Join(cacheDir, urlToKey(url)))
+	if err == nil {
+		return b
+	}
+	return nil
+}
+
+func urlToKey(url string) string { return fmt.Sprintf("%x.txt", sha256.Sum256([]byte(url))) }
+
+func pruneCache() {
+	if cacheDir == "" {
+		return
+	}
+	threshold := time.Now().Add(-5 * time.Minute)
+	filepath.WalkDir(cacheDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() || !strings.HasSuffix(path, ".txt") {
+			return nil
+		}
+		if fi, err := d.Info(); err == nil && fi.ModTime().Before(threshold) {
+			_ = os.Remove(path)
+		}
+		return nil
+	})
+}
+
+var cacheDir = filepath.Join(os.TempDir(), "dump-twist-thread")
+
+func init() {
+	flag.Usage = func() {
+		w := flag.CommandLine.Output()
+		fmt.Fprintf(w, "Usage: %s URL\n", os.Args[0])
+		fmt.Fprintln(w, "URL is a Twist thread url you can get with “Copy link to thread” action")
+		flag.PrintDefaults()
+	}
+}
