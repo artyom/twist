@@ -5,11 +5,13 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -41,6 +43,10 @@ func run(ctx context.Context, cache bool, threadUrl string) error {
 	token := os.Getenv("TWIST_TOKEN")
 	if token == "" {
 		return errors.New("please set TWIST_TOKEN env")
+	}
+	if strings.Contains(threadUrl, "/msg/") {
+		// TODO: consolidate logic?
+		return dumpChat(ctx, cache, token, threadUrl)
 	}
 	ids, err := tidFromUrl(threadUrl)
 	if err != nil {
@@ -176,4 +182,63 @@ func init() {
 		fmt.Fprintln(w, "URL is a Twist thread url you can get with “Copy link to thread” action")
 		flag.PrintDefaults()
 	}
+}
+
+var twistChatUrl = regexp.MustCompile(`^\Qhttps://twist.com/a/\E(?:\d+)/msg/(\d+)/$`)
+
+func dumpChat(ctx context.Context, cache bool, token, url string) error {
+	m := twistChatUrl.FindStringSubmatch(url)
+	if m == nil {
+		return fmt.Errorf("%q does not match %v", url, twistChatUrl)
+	}
+
+	if cache {
+		if b := readCache(url); len(b) != 0 {
+			_, err := os.Stdout.Write(b)
+			return err
+		}
+	}
+
+	const limit = 500
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.twist.com/api/v3/conversation_messages/get?conversation_id="+m[1]+"&limit="+strconv.Itoa(limit), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status: %s", resp.Status)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		return fmt.Errorf("unexpected content-type: %q", ct)
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	var out []struct {
+		Text      string `json:"content"`
+		Author    string `json:"creator_name"`
+		Timestamp int64  `json:"posted_ts"`
+	}
+	if err := dec.Decode(&out); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	if len(out) == limit {
+		buf.WriteString("(earlier messages not shown)\n\n")
+	}
+	for _, msg := range out {
+		fmt.Fprintf(&buf, "<msg><author>%s</author>", msg.Author)
+		fmt.Fprintf(&buf, "<date>%s</date>\n", time.Unix(msg.Timestamp, 0).Format("Monday, 02 Jan 2006 15:04"))
+		fmt.Fprintln(&buf, clearMentions(msg.Text))
+		buf.WriteString("</msg>\n")
+	}
+	if cache {
+		writeCache(url, buf.Bytes())
+	}
+	_, err = os.Stdout.Write(buf.Bytes())
+	return err
 }
