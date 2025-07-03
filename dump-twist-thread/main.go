@@ -158,8 +158,13 @@ func pruneCache() {
 	if cacheDir == "" {
 		return
 	}
+	root, err := os.OpenRoot(cacheDir)
+	if err != nil {
+		return
+	}
+	defer root.Close()
 	threshold := time.Now().Add(-5 * time.Minute)
-	filepath.WalkDir(cacheDir, func(path string, d fs.DirEntry, err error) error {
+	fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -167,7 +172,7 @@ func pruneCache() {
 			return nil
 		}
 		if fi, err := d.Info(); err == nil && fi.ModTime().Before(threshold) {
-			_ = os.Remove(path)
+			_ = root.Remove(path)
 		}
 		return nil
 	})
