@@ -35,25 +35,25 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, cache bool, threadUrl string) error {
+func run(ctx context.Context, cache bool, threadURL string) error {
 	pruneCache()
-	if threadUrl == "" {
+	if threadURL == "" {
 		return errors.New("want Twist thread url as the first argument")
 	}
 	token := os.Getenv("TWIST_TOKEN")
 	if token == "" {
 		return errors.New("please set TWIST_TOKEN env")
 	}
-	if strings.Contains(threadUrl, "/msg/") {
+	if strings.Contains(threadURL, "/msg/") {
 		// TODO: consolidate logic?
-		return dumpChat(ctx, cache, token, threadUrl)
+		return dumpChat(ctx, cache, token, threadURL)
 	}
-	ids, err := tidFromUrl(threadUrl)
+	ids, err := tidFromURL(threadURL)
 	if err != nil {
 		return err
 	}
 	if cache {
-		if b := readCache(threadUrl); len(b) != 0 {
+		if b := readCache(threadURL); len(b) != 0 {
 			_, err = os.Stdout.Write(b)
 			return err
 		}
@@ -93,18 +93,18 @@ func run(ctx context.Context, cache bool, threadUrl string) error {
 		}
 	}
 	if cache {
-		writeCache(threadUrl, buf.Bytes())
+		writeCache(threadURL, buf.Bytes())
 	}
 	_, err = os.Stdout.Write(buf.Bytes())
 	return err
 }
 
-var twistThreadUrl = regexp.MustCompile(`^https://twist\.com/a/(\d+)/ch/(\d+)/t/(\d+)/?$`)
+var twistThreadURL = regexp.MustCompile(`^https://twist\.com/a/(\d+)/ch/(\d+)/t/(\d+)/?$`)
 
-func tidFromUrl(url string) (*tid, error) {
-	m := twistThreadUrl.FindStringSubmatch(url)
+func tidFromURL(url string) (*tid, error) {
+	m := twistThreadURL.FindStringSubmatch(url)
 	if m == nil {
-		return nil, fmt.Errorf("%q does not match %v", url, twistThreadUrl)
+		return nil, fmt.Errorf("%q does not match %v", url, twistThreadURL)
 	}
 	var out tid
 	var err error
@@ -184,12 +184,12 @@ func init() {
 	}
 }
 
-var twistChatUrl = regexp.MustCompile(`^\Qhttps://twist.com/a/\E(?:\d+)/msg/(\d+)/$`)
+var twistChatURL = regexp.MustCompile(`^\Qhttps://twist.com/a/\E(?:\d+)/msg/(\d+)/$`)
 
 func dumpChat(ctx context.Context, cache bool, token, url string) error {
-	m := twistChatUrl.FindStringSubmatch(url)
+	m := twistChatURL.FindStringSubmatch(url)
 	if m == nil {
-		return fmt.Errorf("%q does not match %v", url, twistChatUrl)
+		return fmt.Errorf("%q does not match %v", url, twistChatURL)
 	}
 
 	if cache {
